@@ -1,150 +1,204 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Parametric Design</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
-    <style>
-        body {
-            margin: 0;
-            background: #0a0a0a;
-            overflow: hidden;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Parametric Design</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      background: #000000;
+      overflow: hidden;
+      color: white;
+      font-family: sans-serif;
+    }
+    #inputContainer {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+    }
+
+    #clearButton {
+      margin-left: 10px;
+      padding: 6px 12px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+
+    input {
+      font-size: 18px;
+      padding: 4px 8px;
+    }
+  </style>
 </head>
 <body>
+<div id="inputContainer">
+    <input type="text" id="textInput" placeholder="input text..." />
+    <button id="clearButton">Clear</button>
+</div>
+
 <script>
-    let particles = [];
-    let pixelSize = 4;
-    let cols, rows;
-    let grid = [];
+  let particles = [];
+  let pixelSize = 2;
+  let cols, rows;
+  let grid = [];
+  let font;
 
-    function setup() {
-        createCanvas(windowWidth, windowHeight);
-        colorMode(255);
-        cols = floor(width / pixelSize);
-        rows = floor(height / pixelSize);
-        grid = Array.from({ length: cols }, () => Array(rows).fill(null));
+  function preload() {
+    font = loadFont('https://fonts.gstatic.com/s/roboto/v30/KFOmCnqEu92Fr1Mu4mxM.woff');
+  }
 
-        // Initial sand
-        for (let i = 0; i < 200; i++) {
-            let gridX = floor(random(cols));
-            let gridY = floor(random(-50, -10));
-            let px = gridX * pixelSize;
-            let py = gridY * pixelSize;
-            particles.push(new Particle(px, py));
-        }
+  function setup() {
+    createCanvas(windowWidth, windowHeight);
+    colorMode(HSB, 360, 100, 100, 255); // Use HSB for hue control
+    textFont(font);
+    cols = floor(width / pixelSize);
+    rows = floor(height / pixelSize);
+    grid = Array.from({ length: cols }, () => Array(rows).fill(null));
+
+    for (let i = 0; i < 200; i++) {
+      let gridX = floor(random(cols));
+      let gridY = floor(random(-50, -10));
+      let px = gridX * pixelSize;
+      let py = gridY * pixelSize;
+      particles.push(new Particle(px, py));
     }
 
-    function draw() {
-        background(0, 8);
+    const input = document.getElementById('textInput');
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        createTextParticles(input.value);
+        input.value = '';
+      }
+    });
 
-        // Clear grid
-        for (let x = 0; x < cols; x++) {
-            for (let y = 0; y < rows; y++) {
-                grid[x][y] = null;
-            }
-        }
+    const button = document.getElementById('clearButton');
+    button.addEventListener('click', () => {
+      particles = [];
+      grid = Array.from({ length: cols }, () => Array(rows).fill(null));
+    });
 
-        // Place particles in grid
-        for (let i = 0; i < particles.length; i++) {
-            let p = particles[i];
-            let gx = floor(p.x / pixelSize);
-            let gy = floor(p.y / pixelSize);
-            if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
-                grid[gx][gy] = p;
-            }
-        }
+  }
 
-        // Update and display particles
-        for (let i = 0; i < particles.length; i++) {
-            particles[i].update();
-        }
-        for (let i = 0; i < particles.length; i++) {
-            particles[i].display();
-        }
+  function draw() {
+    background(0, 8);
 
-        // Remove particles that are out of bounds
-        for (let i = particles.length - 1; i >= 0; i--) {
-            if (particles[i].y > height + 50) {
-                particles.splice(i, 1);
-            }
-        }
-
-        // Add new particles occasionally
-        if (random(100) < 4) {
-            let gridX = floor(random(cols));
-            let px = gridX * pixelSize;
-            particles.push(new Particle(px, -pixelSize));
-        }
+    // Clear grid
+    for (let x = 0; x < cols; x++) {
+      for (let y = 0; y < rows; y++) {
+        grid[x][y] = null;
+      }
     }
 
-    class Particle {
-        constructor(x, y) {
-            this.x = floor(x / pixelSize) * pixelSize;
-            this.y = floor(y / pixelSize) * pixelSize;
-            this.vx = 0;
-            this.vy = pixelSize;
-            this.moveTimer = 0;
-            this.moveDelay = floor(random(1, 3));
-            this.grayness = random(100, 200);
-            this.alpha = random(50, 100);
-            this.brightness = random(50, 100);
-        }
-
-        update() {
-            let gx = floor(this.x / pixelSize);
-            let gy = floor(this.y / pixelSize);
-
-            // Only move if not at bottom and cell below is empty
-            if (gy < rows - 1) {
-                if (!grid[gx][gy + 1]) {
-                    this.y += pixelSize;
-                } else {
-                    // Try to move diagonally left or right if possible
-                    let dirs = [-1, 1];
-                    let moved = false;
-                    for (let d of dirs.sort(() => random() - 0.5)) {
-                        let nx = gx + d;
-                        if (nx >= 0 && nx < cols && !grid[nx][gy + 1]) {
-                            this.x = nx * pixelSize;
-                            this.y += pixelSize;
-                            moved = true;
-                            break;
-                        }
-                    }
-                    if (!moved) {
-                        // Stay in place
-                    }
-                }
-            }
-        }
-
-        display() {
-            fill(this.hue, 80, this.brightness, this.alpha);
-            noStroke();
-            rect(this.x, this.y, pixelSize, pixelSize);
-            rect(this.x - 1, this.y - 1, pixelSize + 2, pixelSize + 2);
-        }
+    // Place particles in grid
+    for (let p of particles) {
+      let gx = floor(p.x / pixelSize);
+      let gy = floor(p.y / pixelSize);
+      if (gx >= 0 && gx < cols && gy >= 0 && gy < rows) {
+        grid[gx][gy] = p;
+      }
     }
 
-    function mouseDragged() {
-        let gridX = floor(mouseX / pixelSize) * pixelSize;
-        let gridY = floor(mouseY / pixelSize) * pixelSize;
-        for (let i = 0; i < 8; i++) {
-            let offsetX = floor(random(-3, 4)) * pixelSize;
-            let offsetY = floor(random(-3, 4)) * pixelSize;
-            particles.push(new Particle(gridX + offsetX, gridY + offsetY));
-        }
+    // Update and display
+    for (let p of particles) p.update();
+    for (let p of particles) p.display();
+
+    // Cleanup
+    for (let i = particles.length - 1; i >= 0; i--) {
+      if (particles[i].y > height + 50) {
+        particles.splice(i, 1);
+      }
     }
 
-    function windowResized() {
-        resizeCanvas(windowWidth, windowHeight);
-        cols = floor(width / pixelSize);
-        rows = floor(height / pixelSize);
-        grid = Array.from({ length: cols }, () => Array(rows).fill(null));
+    if (random(100) < 4) {
+      let gridX = floor(random(cols));
+      let px = gridX * pixelSize;
+      particles.push(new Particle(px, -pixelSize));
     }
+  }
+
+class Particle {
+  constructor(x, y) {
+    this.x = floor(x / pixelSize) * pixelSize;
+    this.y = floor(y / pixelSize) * pixelSize;
+    this.alpha = 150;
+    this.brightness = random(90, 100);  // variation in brightness
+    this.hue = random(45, 55);          // yellow range in HSB
+  }
+
+  update() {
+    let gx = floor(this.x / pixelSize);
+    let gy = floor(this.y / pixelSize);
+
+    // Guard: skip update if out of bounds
+    if (
+      gx < 0 || gx >= cols ||
+      gy < 0 || gy >= rows
+    ) return;
+
+    if (gy < rows - 1) {
+      if (!grid[gx][gy + 1]) {
+        this.y += pixelSize;
+      } else {
+        let dirs = [-1, 1];
+        for (let d of dirs.sort(() => random() - 0.5)) {
+          let nx = gx + d;
+          if (nx >= 0 && nx < cols && !grid[nx][gy + 1]) {
+            this.x = nx * pixelSize;
+            this.y += pixelSize;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  display() {
+    fill(this.hue, 100, this.brightness, this.alpha);
+    noStroke();
+    rect(this.x, this.y, pixelSize, pixelSize);
+  }
+}
+
+
+  function createTextParticles(text) {
+    if (!text) return;
+    let bounds = font.textBounds(text, 0, 0, 128);
+    let x = width / 2 - bounds.w / 2;
+    let y = height / 4;
+
+    let points = font.textToPoints(text, x, y, 128, {
+      sampleFactor: 0.8,
+      simplifyThreshold: 0
+    });
+
+    for (let pt of points) {
+      let px = floor(pt.x / pixelSize) * pixelSize;
+      let py = floor(pt.y / pixelSize) * pixelSize;
+      particles.push(new Particle(px, py));
+    }
+  }
+
+function mouseDragged() {
+  // Prevent adding particles if mouse is outside the canvas
+  if (
+    mouseX < 0 || mouseX > width ||
+    mouseY < 0 || mouseY > height ||
+    isNaN(mouseX) || isNaN(mouseY)
+  ) return;
+
+  let gridX = floor(mouseX / pixelSize) * pixelSize;
+  let gridY = floor(mouseY / pixelSize) * pixelSize;
+  for (let i = 0; i < 8; i++) {
+    let offsetX = floor(random(-3, 4)) * pixelSize;
+    let offsetY = floor(random(-3, 4)) * pixelSize;
+    particles.push(new Particle(gridX + offsetX, gridY + offsetY));
+  }
+}
+
+
 </script>
 </body>
 </html>
