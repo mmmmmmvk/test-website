@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Parametric Design</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400&display=swap" rel="stylesheet">
   <style>
     body {
       margin: 0;
       background: #000000;
       overflow: hidden;
       color: white;
-      font-family: sans-serif;
+      font-family: 'Montserrat', sans-serif;
     }
     #inputContainer {
       position: absolute;
@@ -20,23 +21,125 @@
       z-index: 10;
     }
 
-    #clearButton {
+    #clearButton, #micButton {
       margin-left: 10px;
       padding: 6px 12px;
       font-size: 16px;
       cursor: pointer;
     }
 
-    input {
+    #micButton {
+      background-color: #333;
+      color: white;
+      border: 1px solid #666;
+      border-radius: 4px;
+    }
+
+    #micButton.listening {
+      background-color: #ff4444;
+      border-color: #ff6666;
+    }
+
+    input, select {
       font-size: 18px;
       padding: 4px 8px;
+      margin-right: 5px;
+    }
+
+    select {
+      background-color: #333;
+      color: white;
+      border: 1px solid #666;
+      border-radius: 4px;
+    }
+
+    #status {
+      margin-top: 10px;
+      font-size: 14px;
+      color: #ccc;
+    }
+
+    #controls {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+
+    #colorControls {
+      display: flex;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    #colorSlider {
+      width: 200px;
+      margin: 0 10px;
+      height: 8px;
+      background: linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000);
+      border-radius: 4px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    #colorSlider::-webkit-slider-thumb {
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      background: white;
+      border: 2px solid #333;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+
+    #colorSlider::-moz-range-thumb {
+      width: 20px;
+      height: 20px;
+      background: white;
+      border: 2px solid #333;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+
+    #colorLabel {
+      color: #ccc;
+      font-size: 14px;
+      min-width: 80px;
+    }
+
+    #shortcuts {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #666;
     }
   </style>
 </head>
 <body>
 <div id="inputContainer">
-    <input type="text" id="textInput" placeholder="input text..." />
-    <button id="clearButton">Clear</button>
+    <div id="controls">
+        <input type="text" id="textInput" placeholder="input text..." />
+        <select id="languageSelect">
+            <option value="en-US">English (US)</option>
+            <option value="en-GB">English (UK)</option>
+            <option value="es-ES">Spanish</option>
+            <option value="fr-FR">French</option>
+            <option value="de-DE">German</option>
+            <option value="it-IT">Italian</option>
+            <option value="ru-RU">Russian</option>
+            <option value="zh-CN">Chinese</option>
+            <option value="ja-JP">Japanese</option>
+            <option value="ko-KR">Korean</option>
+            <option value="pt-BR">Portuguese (Brazil)</option>
+            <option value="ar-SA">Arabic</option>
+        </select>
+        <button id="clearButton">Clear</button>
+        <button id="micButton">Start Listening</button>
+    </div>
+    <div id="colorControls">
+        <label id="colorLabel">Color:</label>
+        <input type="range" id="colorSlider" min="0" max="360" value="50" />
+    </div>
+    <div id="shortcuts">Press 'C' to clear | Enter to add text</div>
+    <div id="status"></div>
 </div>
 
 <script>
@@ -44,16 +147,20 @@
   let pixelSize = 2;
   let cols, rows;
   let grid = [];
-  let font;
-
-  function preload() {
-    font = loadFont('https://fonts.gstatic.com/s/roboto/v30/KFOmCnqEu92Fr1Mu4mxM.woff');
-  }
+  let recognition;
+  let isListening = false;
+  let continuousListening = false;
+  let lastProcessedText = '';
+  let wordBuffer = [];
+  let currentHue = 50; // Default hue value
 
   function setup() {
     createCanvas(windowWidth, windowHeight);
     colorMode(HSB, 360, 100, 100, 255); // Use HSB for hue control
-    textFont(font);
+    
+    // Use system font that supports Cyrillic
+    textFont('Montserrat, Arial, sans-serif');
+    
     cols = floor(width / pixelSize);
     rows = floor(height / pixelSize);
     grid = Array.from({ length: cols }, () => Array(rows).fill(null));
@@ -75,11 +182,171 @@
     });
 
     const button = document.getElementById('clearButton');
-    button.addEventListener('click', () => {
-      particles = [];
-      grid = Array.from({ length: cols }, () => Array(rows).fill(null));
+    button.addEventListener('click', clearParticles);
+
+    // Add color slider event listener
+    const colorSlider = document.getElementById('colorSlider');
+    colorSlider.addEventListener('input', (e) => {
+      currentHue = parseInt(e.target.value);
     });
 
+    // Initialize speech recognition
+    initSpeechRecognition();
+  }
+
+  // Extract clear function for reusability
+  function clearParticles() {
+    particles = [];
+    grid = Array.from({ length: cols }, () => Array(rows).fill(null));
+  }
+
+  // Add p5.js keyPressed function for keyboard shortcuts
+  function keyPressed() {
+    // Check if 'c' or 'C' is pressed and the text input is not focused
+    if ((key === 'c' || key === 'C') && document.activeElement !== document.getElementById('textInput')) {
+      clearParticles();
+    }
+  }
+
+  function initSpeechRecognition() {
+    const micButton = document.getElementById('micButton');
+    const status = document.getElementById('status');
+    const textInput = document.getElementById('textInput');
+    const languageSelect = document.getElementById('languageSelect');
+
+    // Check if speech recognition is supported
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SpeechRecognition();
+      
+      recognition.continuous = true; // Enable continuous listening
+      recognition.interimResults = true; // Get results while speaking
+      recognition.maxAlternatives = 1; // Faster processing
+      recognition.lang = languageSelect.value;
+
+      // Update language when dropdown changes
+      languageSelect.addEventListener('change', () => {
+        recognition.lang = languageSelect.value;
+        if (isListening) {
+          recognition.stop();
+          setTimeout(() => {
+            if (continuousListening) {
+              recognition.start();
+            }
+          }, 50); // Reduced restart delay
+        }
+      });
+
+      recognition.onstart = () => {
+        isListening = true;
+        micButton.textContent = 'Listening...';
+        micButton.classList.add('listening');
+        status.textContent = `Listening in ${languageSelect.options[languageSelect.selectedIndex].text}... Speak now!`;
+      };
+
+      recognition.onresult = (event) => {
+        let transcript = '';
+        let isFinal = false;
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            isFinal = true;
+          }
+        }
+        
+        // Show interim results immediately
+        textInput.value = transcript;
+        
+        // Process words as they're recognized (even interim results)
+        if (transcript.trim() && transcript !== lastProcessedText) {
+          let words = transcript.trim().split(/\s+/);
+          let lastWord = words[words.length - 1];
+          
+          // If we have a new word that's reasonably confident
+          if (lastWord && lastWord.length > 0 && !wordBuffer.includes(lastWord)) {
+            // Create particles immediately for real-time effect
+            setTimeout(() => {
+              createTextParticles(lastWord);
+            }, 10); // Minimal delay for smooth rendering
+            
+            wordBuffer.push(lastWord);
+            if (wordBuffer.length > 5) wordBuffer.shift(); // Keep buffer small
+          }
+          
+          lastProcessedText = transcript;
+        }
+        
+        // Clear input after final result for continuous flow
+        if (isFinal && transcript.trim()) {
+          setTimeout(() => {
+            textInput.value = '';
+            lastProcessedText = '';
+            wordBuffer = [];
+          }, 100);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        status.textContent = `Error: ${event.error}`;
+        
+        // Quick restart on errors for minimal interruption
+        if (continuousListening && (event.error === 'no-speech' || event.error === 'audio-capture')) {
+          setTimeout(() => {
+            if (continuousListening) {
+              recognition.start();
+            }
+          }, 200); // Faster restart
+        } else {
+          resetMicButton();
+        }
+      };
+
+      recognition.onend = () => {
+        isListening = false;
+        
+        // Immediate restart for continuous flow
+        if (continuousListening) {
+          setTimeout(() => {
+            if (continuousListening) {
+              recognition.start();
+            }
+          }, 50); // Much faster restart
+        } else {
+          resetMicButton();
+        }
+      };
+
+      micButton.addEventListener('click', () => {
+        if (continuousListening) {
+          continuousListening = false;
+          recognition.stop();
+          resetMicButton();
+        } else {
+          continuousListening = true;
+          lastProcessedText = '';
+          wordBuffer = [];
+          recognition.start();
+        }
+      });
+
+    } else {
+      micButton.disabled = true;
+      micButton.textContent = 'Not Supported';
+      status.textContent = 'Speech recognition not supported in this browser';
+    }
+  }
+
+  function resetMicButton() {
+    const micButton = document.getElementById('micButton');
+    const status = document.getElementById('status');
+    
+    isListening = false;
+    continuousListening = false;
+    micButton.textContent = 'Start Listening';
+    micButton.classList.remove('listening');
+    status.textContent = '';
   }
 
   function draw() {
@@ -125,7 +392,7 @@ class Particle {
     this.y = floor(y / pixelSize) * pixelSize;
     this.alpha = 150;
     this.brightness = random(90, 100);  // variation in brightness
-    this.hue = random(45, 55);          // yellow range in HSB
+    this.hue = currentHue + random(-10, 10); // Use current hue with slight variation
   }
 
   update() {
@@ -162,22 +429,54 @@ class Particle {
   }
 }
 
-
   function createTextParticles(text) {
     if (!text) return;
-    let bounds = font.textBounds(text, 0, 0, 128);
-    let x = width / 2 - bounds.w / 2;
-    let y = height / 4;
-
-    let points = font.textToPoints(text, x, y, 128, {
-      sampleFactor: 0.8,
-      simplifyThreshold: 0
-    });
-
-    for (let pt of points) {
-      let px = floor(pt.x / pixelSize) * pixelSize;
-      let py = floor(pt.y / pixelSize) * pixelSize;
-      particles.push(new Particle(px, py));
+    
+    try {
+      // Optimized graphics creation with smaller canvas for speed
+      let textGraphics = createGraphics(800, 200); // Smaller canvas for faster processing
+      textGraphics.textFont('Montserrat, Arial, sans-serif');
+      textGraphics.textSize(80); // Slightly smaller for faster processing
+      textGraphics.fill(255);
+      textGraphics.textAlign(CENTER, CENTER);
+      
+      let x = 400; // Center of graphics canvas
+      let y = 100;
+      
+      textGraphics.text(text, x, y);
+      
+      // Generate random position for this text instance
+      let randomX = random(width * 0.1, width * 0.9);  // Random X between 10% and 90% of screen width
+      let randomY = random(height * 0.1, height * 0.6); // Random Y between 10% and 60% of screen height
+      
+      // Sample pixels from the text graphics
+      textGraphics.loadPixels();
+      
+      let step = 3; // Smaller step for better quality but still fast
+      
+      for (let ty = y - 40; ty < y + 40; ty += step) {
+        for (let tx = x - textGraphics.textWidth(text) / 2; tx < x + textGraphics.textWidth(text) / 2; tx += step) {
+          if (tx >= 0 && tx < 800 && ty >= 0 && ty < 200) {
+            let index = (floor(ty) * 800 + floor(tx)) * 4;
+            let alpha = textGraphics.pixels[index + 3]; // Alpha channel
+            
+            if (alpha > 128) { // If pixel is not transparent
+              // Scale to actual canvas position using random position
+              let actualX = (tx - 400) + randomX;
+              let actualY = (ty - 100) + randomY;
+              
+              let px = floor(actualX / pixelSize) * pixelSize;
+              let py = floor(actualY / pixelSize) * pixelSize;
+              particles.push(new Particle(px, py));
+            }
+          }
+        }
+      }
+      
+      textGraphics.remove(); // Clean up graphics buffer immediately
+      
+    } catch (e) {
+      console.log('Error creating text particles:', e);
     }
   }
 
@@ -197,7 +496,6 @@ function mouseDragged() {
     particles.push(new Particle(gridX + offsetX, gridY + offsetY));
   }
 }
-
 
 </script>
 </body>
