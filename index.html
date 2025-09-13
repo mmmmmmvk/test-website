@@ -158,7 +158,10 @@
     createCanvas(windowWidth, windowHeight);
     colorMode(HSB, 360, 100, 100, 255); // Use HSB for hue control
     
-    // Use system font that supports Cyrillic
+    // Disable pixel density scaling to ensure consistent behavior
+    pixelDensity(1);
+    
+    // Use system font that supports multiple languages
     textFont('Montserrat, Arial, sans-serif');
     
     cols = floor(width / pixelSize);
@@ -433,50 +436,85 @@ class Particle {
     if (!text) return;
     
     try {
-      // Optimized graphics creation with smaller canvas for speed
-      let textGraphics = createGraphics(800, 200); // Smaller canvas for faster processing
+      // Create off-screen graphics buffer
+      let textGraphics = createGraphics(800, 200);
+      
+      // CRITICAL FIX: Set pixel density to 1 for the graphics buffer
+      // This ensures consistent behavior across different display densities
+      textGraphics.pixelDensity(1);
+      
+      // Set up text rendering
+      textGraphics.background(0); // Ensure clean background
       textGraphics.textFont('Montserrat, Arial, sans-serif');
-      textGraphics.textSize(80); // Slightly smaller for faster processing
+      textGraphics.textSize(80);
       textGraphics.fill(255);
       textGraphics.textAlign(CENTER, CENTER);
       
+      // Draw the text
       let x = 400; // Center of graphics canvas
       let y = 100;
-      
       textGraphics.text(text, x, y);
       
       // Generate random position for this text instance
-      let randomX = random(width * 0.1, width * 0.9);  // Random X between 10% and 90% of screen width
-      let randomY = random(height * 0.1, height * 0.6); // Random Y between 10% and 60% of screen height
+      let randomX = random(width * 0.1, width * 0.9);
+      let randomY = random(height * 0.1, height * 0.6);
       
-      // Sample pixels from the text graphics
+      // Get text bounds for more efficient sampling
+      let textWidth = textGraphics.textWidth(text);
+      let textHeight = 80; // Approximate height based on text size
+      
+      // Load pixels after drawing
       textGraphics.loadPixels();
       
-      let step = 3; // Smaller step for better quality but still fast
+      // Sample pixels more efficiently
+      let step = 3;
+      let startX = max(0, floor(x - textWidth / 2 - 10));
+      let endX = min(800, floor(x + textWidth / 2 + 10));
+      let startY = max(0, floor(y - textHeight / 2));
+      let endY = min(200, floor(y + textHeight / 2));
       
-      for (let ty = y - 40; ty < y + 40; ty += step) {
-        for (let tx = x - textGraphics.textWidth(text) / 2; tx < x + textGraphics.textWidth(text) / 2; tx += step) {
-          if (tx >= 0 && tx < 800 && ty >= 0 && ty < 200) {
-            let index = (floor(ty) * 800 + floor(tx)) * 4;
-            let alpha = textGraphics.pixels[index + 3]; // Alpha channel
+      // Create particles from sampled pixels
+      for (let ty = startY; ty < endY; ty += step) {
+        for (let tx = startX; tx < endX; tx += step) {
+          // Calculate pixel index (accounting for RGBA - 4 values per pixel)
+          let index = (ty * 800 + tx) * 4;
+          
+          // Check if we're within bounds of the pixel array
+          if (index >= 0 && index < textGraphics.pixels.length) {
+            // Check the red channel (since we drew white text)
+            // We can use any channel (R, G, or B) since the text is white
+            let brightness = textGraphics.pixels[index];
             
-            if (alpha > 128) { // If pixel is not transparent
-              // Scale to actual canvas position using random position
-              let actualX = (tx - 400) + randomX;
-              let actualY = (ty - 100) + randomY;
+            // If pixel is bright enough (part of the text)
+            if (brightness > 128) {
+              // Calculate actual canvas position
+              let actualX = (tx - x) + randomX;
+              let actualY = (ty - y) + randomY;
               
+              // Snap to grid
               let px = floor(actualX / pixelSize) * pixelSize;
               let py = floor(actualY / pixelSize) * pixelSize;
+              
+              // Create particle
               particles.push(new Particle(px, py));
             }
           }
         }
       }
       
-      textGraphics.remove(); // Clean up graphics buffer immediately
+      // Clean up graphics buffer
+      textGraphics.remove();
       
     } catch (e) {
-      console.log('Error creating text particles:', e);
+      console.error('Error creating text particles:', e);
+      // Fallback: create some particles at random position even if text rendering fails
+      let fallbackX = random(width * 0.2, width * 0.8);
+      let fallbackY = random(height * 0.2, height * 0.5);
+      for (let i = 0; i < 100; i++) {
+        let px = fallbackX + random(-50, 50);
+        let py = fallbackY + random(-20, 20);
+        particles.push(new Particle(px, py));
+      }
     }
   }
 
