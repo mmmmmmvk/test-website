@@ -216,38 +216,120 @@
     const status = document.getElementById('status');
     const textInput = document.getElementById('textInput');
     const languageSelect = document.getElementById('languageSelect');
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
 
-    // Check if speech recognition is supported
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognition = new SpeechRecognition();
-      
-      recognition.continuous = true; // Enable continuous listening
-      recognition.interimResults = true; // Get results while speaking
-      recognition.maxAlternatives = 1; // Faster processing
-      recognition.lang = languageSelect.value;
+    if (!SpeechRecognition) {
+      micButton.disabled = true;
+      micButton.textContent = 'Not Supported';
+      status.textContent = 'Speech recognition is unavailable in this browser. You can still type text.';
+      return;
+    }
+    if (window.isSecureContext === false) {
+      micButton.disabled = true;
+      status.textContent = 'Open this page over HTTPS or localhost to use the microphone.';
+      return;
+    }
 
-      // Update language when dropdown changes
-      languageSelect.addEventListener('change', () => {
-        recognition.lang = languageSelect.value;
-        if (isListening) {
-          recognition.stop();
-          setTimeout(() => {
-            if (continuousListening) {
-              recognition.start();
-            }
-          }, 50); // Reduced restart delay
-        }
-      });
+    recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
 
-      recognition.onstart = () => {
-        isListening = true;
-        micButton.textContent = 'Listening...';
-        micButton.classList.add('listening');
-        status.textContent = `Listening in ${languageSelect.options[languageSelect.selectedIndex].text}... Speak now!`;
+    // User intent is separate from the browser session state.
+    let state = 'idle';
+    let restartTimer = null;
+    let retryCount = 0;
+    let sessionStartedAt = 0;
+    let sessionError = '';
+    let languageChangePending = false;
+    const maxRetries = 4;
+
+    function cancelRestart() {
+      clearTimeout(restartTimer);
+      restartTimer = null;
+    }
+
+    function showButton() {
+      micButton.textContent = continuousListening ? 'Stop Listening' : 'Start Listening';
+      micButton.classList.toggle('listening', continuousListening);
+      micButton.setAttribute('aria-pressed', String(continuousListening));
+      micButton.disabled = state === 'stopping';
+    }
+
+    function fail(message) {
+      continuousListening = false;
+      cancelRestart();
+      status.textContent = message;
+      showButton();
+    }
+
+    function errorMessage(code) {
+      const messages = {
+        'not-allowed': 'Microphone access was denied. Allow microphone access in your browser and system settings, then try again.',
+        'service-not-allowed': 'The browser blocked the speech recognition service. Check browser settings or try another supported browser.',
+        'audio-capture': 'No microphone audio is available. Check the selected microphone and system permissions, then try again.',
+        'network': 'The speech recognition service could not be reached. Check your connection and try again.',
+        'language-not-supported': 'The selected language is not supported by this speech recognition service.',
+        'aborted': 'Speech recognition was interrupted. Please try again.'
       };
+      return messages[code] || `Speech recognition failed (${code}). Please try again.`;
+    }
+
+    function startSession() {
+      cancelRestart();
+      if (!continuousListening || state !== 'idle') return;
+      state = 'starting';
+      sessionError = '';
+      sessionStartedAt = Date.now();
+      languageChangePending = false;
+      lastProcessedText = '';
+      wordBuffer = [];
+      recognition.lang = languageSelect.value;
+      status.textContent = 'Starting microphone... Allow access if prompted.';
+      showButton();
+      try {
+        recognition.start();
+      } catch (error) {
+        state = 'idle';
+        isListening = false;
+        console.error('Speech recognition start failed:', error);
+        fail(`Could not start speech recognition (${error.name}). Please try again.`);
+      }
+    }
+
+    function stopSession() {
+      if (state !== 'starting' && state !== 'listening') return;
+      state = 'stopping';
+      showButton();
+      // abort also works while the browser is still starting the session.
+      // Wait for onend before allowing another start.
+      recognition.abort();
+    }
+
+    languageSelect.addEventListener('change', () => {
+      if (!continuousListening) return;
+      languageChangePending = true;
+      cancelRestart();
+      if (state === 'idle') startSession();
+      else stopSession();
+    });
+
+    recognition.onstart = () => {
+      if (!continuousListening || state === 'stopping') {
+        if (state !== 'stopping') stopSession();
+        return;
+      }
+      state = 'listening';
+      isListening = true;
+      showButton();
+      status.textContent = `Listening in ${languageSelect.options[languageSelect.selectedIndex].text}... Speak now!`;
+    };
 
       recognition.onresult = (event) => {
+        if (!continuousListening) return;
+        retryCount = 0;
         let transcript = '';
         let isFinal = false;
         
@@ -290,66 +372,63 @@
         }
       };
 
-      recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        status.textContent = `Error: ${event.error}`;
-        
-        // Quick restart on errors for minimal interruption
-        if (continuousListening && (event.error === 'no-speech' || event.error === 'audio-capture')) {
-          setTimeout(() => {
-            if (continuousListening) {
-              recognition.start();
-            }
-          }, 200); // Faster restart
-        } else {
-          resetMicButton();
-        }
-      };
+    recognition.onerror = (event) => {
+      sessionError = event.error;
+      console.error('Speech recognition error:', event.error, event.message || '');
+      if (!continuousListening) return;
+      if (event.error === 'aborted' && languageChangePending) return;
+      // Retry temporary failures only after onend, never from this handler.
+      if (['no-speech', 'aborted', 'audio-capture', 'network'].includes(event.error)) {
+        status.textContent = event.error === 'no-speech'
+          ? 'No speech detected. Listening will resume...'
+          : `${errorMessage(event.error)} Reconnecting...`;
+      } else {
+        fail(errorMessage(event.error));
+      }
+    };
 
-      recognition.onend = () => {
-        isListening = false;
-        
-        // Immediate restart for continuous flow
-        if (continuousListening) {
-          setTimeout(() => {
-            if (continuousListening) {
-              recognition.start();
-            }
-          }, 50); // Much faster restart
-        } else {
-          resetMicButton();
-        }
-      };
+    recognition.onend = () => {
+      state = 'idle';
+      isListening = false;
+      showButton();
+      if (!continuousListening) return;
 
-      micButton.addEventListener('click', () => {
-        if (continuousListening) {
-          continuousListening = false;
-          recognition.stop();
-          resetMicButton();
-        } else {
-          continuousListening = true;
-          lastProcessedText = '';
-          wordBuffer = [];
-          recognition.start();
-        }
-      });
+      const changingLanguage = languageChangePending;
+      const transientFailure = ['aborted', 'audio-capture', 'network'].includes(sessionError);
+      const endedQuickly = Date.now() - sessionStartedAt < 5000;
+      if (changingLanguage) retryCount = 0;
+      else if (transientFailure || endedQuickly) retryCount++;
+      else retryCount = 0;
 
-    } else {
-      micButton.disabled = true;
-      micButton.textContent = 'Not Supported';
-      status.textContent = 'Speech recognition not supported in this browser';
-    }
-  }
+      if (retryCount > maxRetries) {
+        fail(sessionError && sessionError !== 'no-speech'
+          ? errorMessage(sessionError)
+          : 'The browser keeps ending speech recognition. Check microphone access and try again.');
+        return;
+      }
 
-  function resetMicButton() {
-    const micButton = document.getElementById('micButton');
-    const status = document.getElementById('status');
-    
-    isListening = false;
-    continuousListening = false;
-    micButton.textContent = 'Start Listening';
-    micButton.classList.remove('listening');
-    status.textContent = '';
+      status.textContent = changingLanguage
+        ? 'Switching language...'
+        : 'Reconnecting microphone...';
+      cancelRestart();
+      const delay = changingLanguage ? 250 : Math.min(500 * 2 ** retryCount, 8000);
+      restartTimer = setTimeout(startSession, delay);
+    };
+
+    micButton.addEventListener('click', () => {
+      if (continuousListening) {
+        continuousListening = false;
+        cancelRestart();
+        status.textContent = 'Listening stopped.';
+        stopSession();
+        showButton();
+      } else if (state === 'idle') {
+        continuousListening = true;
+        retryCount = 0;
+        startSession();
+      }
+    });
+    showButton();
   }
 
   function draw() {
