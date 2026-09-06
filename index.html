@@ -59,6 +59,12 @@
       color: #ccc;
     }
 
+    #transcript {
+      margin-top: 8px;
+      max-width: min(700px, 90vw);
+      font-size: 18px;
+    }
+
     #controls {
       display: flex;
       align-items: center;
@@ -122,7 +128,7 @@
             <option value="en-GB">English (UK)</option>
             <option value="es-ES">Spanish</option>
             <option value="fr-FR">French</option>
-            <option value="de-DE">German</option>
+            <option value="de-DE" selected>German</option>
             <option value="it-IT">Italian</option>
             <option value="ru-RU">Russian</option>
             <option value="zh-CN">Chinese</option>
@@ -140,6 +146,7 @@
     </div>
     <div id="shortcuts">Press 'C' to clear | Enter to add text</div>
     <div id="status"></div>
+    <div id="transcript" aria-label="Recognized speech"></div>
 </div>
 
 <script>
@@ -150,8 +157,69 @@
   let recognition;
   let isListening = false;
   let continuousListening = false;
-  let lastProcessedText = '';
-  let wordBuffer = [];
+  let speechRenderQueue = [];
+  let textGraphicsBuffer;
+  const glyphCache = new Map();
+
+  // Track occurrences, not unique spellings. Keep unchanged prefix/suffix
+  // groups when the service revises an interim phrase.
+  class SpeechWords {
+    constructor(add, remove) {
+      this.add = add;
+      this.remove = remove;
+      this.reset();
+    }
+    reset() {
+      this.pending = new Map();
+      this.finalThrough = -1;
+      this.segmenter = null;
+    }
+    tokenize(text, language) {
+      if (typeof Intl.Segmenter === 'function') {
+        if (!this.segmenter || this.language !== language) {
+          this.language = language;
+          this.segmenter = new Intl.Segmenter(language, { granularity: 'word' });
+        }
+        return Array.from(this.segmenter.segment(text))
+          .filter(part => part.isWordLike).map(part => part.segment);
+      }
+      return text.trim().split(/\s+/).filter(Boolean);
+    }
+    update(event, language) {
+      for (const [index, groups] of this.pending) {
+        if (index >= event.results.length) {
+          groups.forEach(this.remove);
+          this.pending.delete(index);
+        }
+      }
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (i <= this.finalThrough) continue;
+        const result = event.results[i];
+        const words = this.tokenize(result[0].transcript, language);
+        const old = this.pending.get(i) || [];
+        const key = word => word.normalize('NFC').toLocaleLowerCase(language);
+        let prefix = 0, suffix = 0;
+        while (prefix < old.length && prefix < words.length &&
+          key(old[prefix].text) === key(words[prefix])) prefix++;
+        while (suffix < old.length - prefix && suffix < words.length - prefix &&
+          key(old[old.length - 1 - suffix].text) === key(words[words.length - 1 - suffix])) suffix++;
+        const groups = old.slice(0, prefix);
+        old.slice(prefix, old.length - suffix).forEach(this.remove);
+        for (let w = prefix; w < words.length - suffix; w++) {
+          const group = { text: words[w], active: true };
+          groups.push(group);
+          this.add(group);
+        }
+        if (suffix) groups.push(...old.slice(old.length - suffix));
+        if (result.isFinal) {
+          this.finalThrough = i;
+          this.pending.delete(i);
+        } else {
+          this.pending.set(i, groups);
+        }
+      }
+    }
+  }
   let currentHue = 50; // Default hue value
 
   function setup() {
@@ -195,11 +263,13 @@
 
     // Initialize speech recognition
     initSpeechRecognition();
+    if (document.fonts) document.fonts.ready.then(() => glyphCache.clear());
   }
 
   // Extract clear function for reusability
   function clearParticles() {
     particles = [];
+    speechRenderQueue = [];
     grid = Array.from({ length: cols }, () => Array(rows).fill(null));
   }
 
@@ -214,7 +284,6 @@
   function initSpeechRecognition() {
     const micButton = document.getElementById('micButton');
     const status = document.getElementById('status');
-    const textInput = document.getElementById('textInput');
     const languageSelect = document.getElementById('languageSelect');
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     status.setAttribute('role', 'status');
@@ -245,6 +314,10 @@
     let sessionError = '';
     let languageChangePending = false;
     const maxRetries = 4;
+    const speechWords = new SpeechWords(
+      group => speechRenderQueue.push(group),
+      group => { group.active = false; }
+    );
 
     function cancelRestart() {
       clearTimeout(restartTimer);
@@ -284,8 +357,7 @@
       sessionError = '';
       sessionStartedAt = Date.now();
       languageChangePending = false;
-      lastProcessedText = '';
-      wordBuffer = [];
+      speechWords.reset();
       recognition.lang = languageSelect.value;
       status.textContent = 'Starting microphone... Allow access if prompted.';
       showButton();
@@ -327,50 +399,16 @@
       status.textContent = `Listening in ${languageSelect.options[languageSelect.selectedIndex].text}... Speak now!`;
     };
 
-      recognition.onresult = (event) => {
-        if (!continuousListening) return;
-        retryCount = 0;
-        let transcript = '';
-        let isFinal = false;
-        
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          transcript += event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            isFinal = true;
-          }
-        }
-        
-        // Show interim results immediately
-        textInput.value = transcript;
-        
-        // Process words as they're recognized (even interim results)
-        if (transcript.trim() && transcript !== lastProcessedText) {
-          let words = transcript.trim().split(/\s+/);
-          let lastWord = words[words.length - 1];
-          
-          // If we have a new word that's reasonably confident
-          if (lastWord && lastWord.length > 0 && !wordBuffer.includes(lastWord)) {
-            // Create particles immediately for real-time effect
-            setTimeout(() => {
-              createTextParticles(lastWord);
-            }, 10); // Minimal delay for smooth rendering
-            
-            wordBuffer.push(lastWord);
-            if (wordBuffer.length > 5) wordBuffer.shift(); // Keep buffer small
-          }
-          
-          lastProcessedText = transcript;
-        }
-        
-        // Clear input after final result for continuous flow
-        if (isFinal && transcript.trim()) {
-          setTimeout(() => {
-            textInput.value = '';
-            lastProcessedText = '';
-            wordBuffer = [];
-          }, 100);
-        }
-      };
+    recognition.onresult = (event) => {
+      if (!continuousListening || languageChangePending) return;
+      retryCount = 0;
+      speechWords.update(event, recognition.lang);
+      // Display the latest phrase immediately. No delayed clearing that could
+      // erase a newer update or interrupt manual text input.
+      const latest = event.results[event.results.length - 1];
+      const transcript = latest ? latest[0].transcript.trim() : '';
+      document.getElementById('transcript').textContent = transcript;
+    };
 
     recognition.onerror = (event) => {
       sessionError = event.error;
@@ -433,6 +471,15 @@
 
   function draw() {
     background(0, 8);
+
+    // Remove superseded hypotheses before rendering their replacements.
+    particles = particles.filter(p => !p.speechGroup || p.speechGroup.active);
+    speechRenderQueue = speechRenderQueue.filter(group => group.active);
+    // Spread a burst over frames instead of blocking the recognition callback.
+    for (let count = 0; count < 3 && speechRenderQueue.length; count++) {
+      const group = speechRenderQueue.shift();
+      createTextParticles(group.text, group);
+    }
 
     // Clear grid
     for (let x = 0; x < cols; x++) {
@@ -511,79 +558,52 @@ class Particle {
   }
 }
 
-  function createTextParticles(text) {
+  function createTextParticles(text, speechGroup = null) {
     if (!text) return;
     
     try {
-      // Create off-screen graphics buffer
-      let textGraphics = createGraphics(800, 200);
-      
-      // CRITICAL FIX: Set pixel density to 1 for the graphics buffer
-      // This ensures consistent behavior across different display densities
-      textGraphics.pixelDensity(1);
-      
-      // Set up text rendering
-      textGraphics.background(0); // Ensure clean background
-      textGraphics.textFont('Montserrat, Arial, sans-serif');
-      textGraphics.textSize(80);
-      textGraphics.fill(255);
-      textGraphics.textAlign(CENTER, CENTER);
-      
-      // Draw the text
-      let x = 400; // Center of graphics canvas
-      let y = 100;
-      textGraphics.text(text, x, y);
-      
+      // Reuse one canvas and cache sampled word shapes to avoid repeated
+      // canvas allocation and pixel readback for common words.
+      if (!textGraphicsBuffer) {
+        textGraphicsBuffer = createGraphics(800, 200);
+        textGraphicsBuffer.pixelDensity(1);
+      }
+      const textGraphics = textGraphicsBuffer;
+      const x = 400;
+      const y = 100;
+      let offsets = glyphCache.get(text);
+      if (!offsets) {
+        textGraphics.background(0);
+        textGraphics.textFont('Montserrat, Arial, sans-serif');
+        textGraphics.textSize(80);
+        const measuredWidth = textGraphics.textWidth(text);
+        if (measuredWidth > 780) textGraphics.textSize(80 * 780 / measuredWidth);
+        textGraphics.fill(255);
+        textGraphics.textAlign(CENTER, CENTER);
+        textGraphics.text(text, x, y);
+        textGraphics.loadPixels();
+        offsets = [];
+        for (let ty = 40; ty < 160; ty += 3) {
+          for (let tx = 0; tx < 800; tx += 3) {
+            if (textGraphics.pixels[(ty * 800 + tx) * 4] > 128) {
+              offsets.push([tx - x, ty - y]);
+            }
+          }
+        }
+        if (glyphCache.size >= 128) glyphCache.delete(glyphCache.keys().next().value);
+        glyphCache.set(text, offsets);
+      }
+
       // Generate random position for this text instance
       let randomX = random(width * 0.1, width * 0.9);
       let randomY = random(height * 0.1, height * 0.6);
       
-      // Get text bounds for more efficient sampling
-      let textWidth = textGraphics.textWidth(text);
-      let textHeight = 80; // Approximate height based on text size
-      
-      // Load pixels after drawing
-      textGraphics.loadPixels();
-      
-      // Sample pixels more efficiently
-      let step = 3;
-      let startX = max(0, floor(x - textWidth / 2 - 10));
-      let endX = min(800, floor(x + textWidth / 2 + 10));
-      let startY = max(0, floor(y - textHeight / 2));
-      let endY = min(200, floor(y + textHeight / 2));
-      
-      // Create particles from sampled pixels
-      for (let ty = startY; ty < endY; ty += step) {
-        for (let tx = startX; tx < endX; tx += step) {
-          // Calculate pixel index (accounting for RGBA - 4 values per pixel)
-          let index = (ty * 800 + tx) * 4;
-          
-          // Check if we're within bounds of the pixel array
-          if (index >= 0 && index < textGraphics.pixels.length) {
-            // Check the red channel (since we drew white text)
-            // We can use any channel (R, G, or B) since the text is white
-            let brightness = textGraphics.pixels[index];
-            
-            // If pixel is bright enough (part of the text)
-            if (brightness > 128) {
-              // Calculate actual canvas position
-              let actualX = (tx - x) + randomX;
-              let actualY = (ty - y) + randomY;
-              
-              // Snap to grid
-              let px = floor(actualX / pixelSize) * pixelSize;
-              let py = floor(actualY / pixelSize) * pixelSize;
-              
-              // Create particle
-              particles.push(new Particle(px, py));
-            }
-          }
-        }
+      for (const [dx, dy] of offsets) {
+        const particle = new Particle(randomX + dx, randomY + dy);
+        particle.speechGroup = speechGroup;
+        particles.push(particle);
       }
-      
-      // Clean up graphics buffer
-      textGraphics.remove();
-      
+
     } catch (e) {
       console.error('Error creating text particles:', e);
       // Fallback: create some particles at random position even if text rendering fails
@@ -592,7 +612,9 @@ class Particle {
       for (let i = 0; i < 100; i++) {
         let px = fallbackX + random(-50, 50);
         let py = fallbackY + random(-20, 20);
-        particles.push(new Particle(px, py));
+        const particle = new Particle(px, py);
+        particle.speechGroup = speechGroup;
+        particles.push(particle);
       }
     }
   }
